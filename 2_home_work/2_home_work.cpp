@@ -1,12 +1,15 @@
 ﻿#include <iostream>
 #include <thread>
-#include <Windows.h>
 #include <mutex>
-#include <chrono>
 #include <vector>
+#include <chrono>
 #include <cstdlib>
+#include <condition_variable>
 
 std::mutex m;
+std::condition_variable cv;
+bool ready = false;
+
 // Функция подсчет
 int Calc(const std::vector<int>& data, int start, int end) {
     int result = 0;
@@ -23,40 +26,61 @@ void Work(const std::vector<int>& data, int num, int count, int& Sum) {
     int range = size / count;
     int start = num * range;
     int end = (num == count - 1) ? size : range * (num + 1);
-    const char pbar = '|';
 
-    // Рассчет времени
+    int progress = 0;
+    const int maxProgress = 10;
+
+    // Выводим заголовок прогресс-бара
+    std::unique_lock<std::mutex> lock(m);
+    std::cout << num << "\t";
+    std::cout << std::this_thread::get_id() << "\t";
+    std::cout << "|";
+    std::cout << std::string(maxProgress, ' ');
+    std::cout << "\n";
+    lock.unlock();
 
     auto startTime = std::chrono::high_resolution_clock::now();
-    int partSum = Calc(data, start, end);
+
+    // Ожидаем, пока все потоки будут готовы
+    std::unique_lock<std::mutex> readyLock(m);
+    while (!ready) {
+        cv.wait(readyLock);
+    }
+    readyLock.unlock();
+
+    for (int i = start; i < end; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100 + (std::rand() % 700)));
+        progress = (i - start + 1) * maxProgress / (end - start);
+
+        // Обновляем прогресс-бар
+        lock.lock();
+        std::cout << "\033[" << num + 2 << ";0H";
+        std::cout << num << "\t";
+        std::cout << std::this_thread::get_id() << "\t";
+        std::cout << "|";
+        std::cout << std::string(progress, '|');
+        std::cout << std::string(maxProgress - progress, ' ');
+        std::cout << "\n";
+        lock.unlock();
+    }
+
     auto endTime = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
 
-    // Сумма в текущем потоке
-    std::unique_lock<std::mutex> lock(m);
+    // Обновляем прогресс для данного потока
+    progress = maxProgress;
+    Sum += Calc(data, start, end);
 
-    Sum += partSum;
-    // Инфо
-
-    std::cout << "Номер потока: " << num + 1 << std::endl;
-    std::cout << "Идентификатор потока: " << std::this_thread::get_id() << std::endl;
-
-    // Вывод прогресс-бара
-    for (int i = 0; i < 50; ++i) {
-
-        if (i < static_cast<int>((static_cast<double>(end) - static_cast<double>(start)) * 50  )) {
-            std::cout << pbar;
-        }
-        else {
-            std::cout << " ";
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(std::rand() % 150 ));
-    
-    }
-    std::cout << " - Завершено. " << std::endl;
-    std::cout << "Время: " << static_cast<double>(duration.count() / 100000.0) << std::endl << std::endl;
-
-
+    //Выводим завершение работы потока
+    lock.lock();
+    std::cout << "\033[" << num + 2 << ";0H";
+    std::cout << num << "\t";
+    std::cout << std::this_thread::get_id() << "\t";
+    std::cout << "|";
+    std::cout << std::string(progress, '|');
+    std::cout << " - Завершено. ";
+    std::cout << "Время: " << static_cast<double>(duration.count() / 1000.0) << "\n";
+    lock.unlock();
 }
 
 int main() {
@@ -70,14 +94,25 @@ int main() {
 
     int count = 4;
     int Sum = 0;
+    std::cout << "#";
+    std::cout << "\tid\t";
+    std::cout << "Прогресс" << std::endl;
 
     for (int i = 0; i < count; ++i) {
         threads.emplace_back(Work, std::ref(data), i, count, std::ref(Sum));
     }
 
+    // Уведомляем о готовности всех потоков
+    {
+        std::unique_lock<std::mutex> lock(m);
+        ready = true;
+        lock.unlock();
+        cv.notify_all();
+    }
+
+    
     for (auto& t : threads) {
         t.join();
     }
 
-    return 0;
 }
